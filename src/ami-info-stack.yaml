@@ -1,0 +1,84 @@
+# This stack contains basic components for custom resource which allows you to
+# find the newest ami image by specified filter parameters. It contains lambda
+# function and a role for the lambda. To start you should deploy this stack to
+# the region and the account where you want to use it, then add custom resource
+# with desired search parameters into you stack:
+#
+# AMIInfo:
+#   Type: Custom::AMIInfo
+#   Properties:
+#     ServiceToken: !ImportValue Custom--AMIInfoFunction--Arn
+#     Region: !Ref "AWS::Region"
+#     # 'DescribeParameters' contains named arguments for ec2.describe_images
+#     # function. See http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.Client.describe_images
+#     DescribeParameters:
+#       Filters:
+#         - Name: name
+#           Values:
+#             - ami-name*
+#
+# After that, you can get image id as follows: `!GetAtt AMIInfo.ImageId`
+# Full list of available attributes see in the docs for `describe_images`.
+Description: Holds custom resource for retrieving AMI info
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  AMIInfoFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  ec2 = boto3.client('ec2')
+                  params = event['ResourceProperties']['DescribeParameters']
+                  print('Describe parameters:', params)
+                  images = ec2.describe_images(**params)['Images']
+                  images.sort(key=lambda x: x['CreationDate'], reverse=True)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, images[0])
+              except Exception as e:
+                  err = '{}: {}'.format(e.__class__.__name__, str(e))
+                  print(err)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Reason': err})
+      Handler: index.handler
+      Runtime: python3.6
+      Timeout: 30
+      Role:
+        Fn::GetAtt: AMIInfoLambdaExecutionRole.Arn
+  AMIInfoLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - ec2:DescribeImages
+            Resource: "*"
+Outputs:
+  AMIInfoFunctionArnOutput:
+    Value: !GetAtt AMIInfoFunction.Arn
+    Export:
+      Name: Custom--AMIInfoFunction--Arn
